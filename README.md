@@ -26,6 +26,7 @@ import torch
 from pvl14_framework import (
     MDLM,
     UniformTimeDistribution,
+    AntitheticUniformTimeDistribution,
     LogLinearExpNoiseTransform,
     DiscreteMaskedPrior,
 )
@@ -40,6 +41,13 @@ mdlm = MDLM(
 x = torch.full((2, 16), 99)              # masked tokens
 logits = torch.randn(2, 16, 100)         # model output logits
 x_next = mdlm.step_confidence(logits, x, curr_step=0, num_steps=8)
+
+# Optional: antithetic time sampling (GenMol-style)
+mdlm_antithetic = MDLM(
+    time_distribution=AntitheticUniformTimeDistribution(sampling_eps=1e-3),
+    prior_distribution=prior,
+    noise_schedule=LogLinearExpNoiseTransform(),
+)
 ```
 
 ## Status
