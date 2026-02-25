@@ -1,15 +1,15 @@
 from .distributions import (
-    AntitheticUniformTimeDistribution,
+    AntitheticUniformTD,
     DiscreteMaskedPrior,
-    UniformTimeDistribution,
+    UniformTD,
 )
 from .mdlm import MDLM
 from .noise import LogLinearExpNoiseTransform
 
 __all__ = [
     "MDLM",
-    "UniformTimeDistribution",
-    "AntitheticUniformTimeDistribution",
+    "UniformTD",
+    "AntitheticUniformTD",
     "DiscreteMaskedPrior",
     "LogLinearExpNoiseTransform",
 ]

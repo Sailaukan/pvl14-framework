@@ -25,15 +25,15 @@ pip install -e .
 import torch
 from pvl14_framework import (
     MDLM,
-    UniformTimeDistribution,
-    AntitheticUniformTimeDistribution,
+    UniformTD,
+    AntitheticUniformTD,
     LogLinearExpNoiseTransform,
     DiscreteMaskedPrior,
 )
 
 prior = DiscreteMaskedPrior(num_classes=100, mask_dim=99)
 mdlm = MDLM(
-    time_distribution=UniformTimeDistribution(),
+    time_distribution=UniformTD(),
     prior_distribution=prior,
     noise_schedule=LogLinearExpNoiseTransform(),
 )
@@ -44,7 +44,7 @@ x_next = mdlm.step_confidence(logits, x, curr_step=0, num_steps=8)
 
 # Optional: antithetic time sampling (GenMol-style)
 mdlm_antithetic = MDLM(
-    time_distribution=AntitheticUniformTimeDistribution(sampling_eps=1e-3),
+    time_distribution=AntitheticUniformTD(sampling_eps=1e-3),
     prior_distribution=prior,
     noise_schedule=LogLinearExpNoiseTransform(),
 )

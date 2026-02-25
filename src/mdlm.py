@@ -6,7 +6,7 @@ from typing import Literal, Optional
 import torch
 from torch import Tensor
 
-from .distributions import DiscreteMaskedPrior, UniformTimeDistribution
+from .distributions import DiscreteMaskedPrior, UniformTD
 from .noise import LogLinearExpNoiseTransform
 from .utils import pad_like
 
@@ -14,7 +14,7 @@ from .utils import pad_like
 class MDLM:
     def __init__(
         self,
-        time_distribution: UniformTimeDistribution,
+        time_distribution: UniformTD,
         prior_distribution: DiscreteMaskedPrior,
         noise_schedule: LogLinearExpNoiseTransform,
         device: str = "cpu",
