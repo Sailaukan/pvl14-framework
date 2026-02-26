@@ -4,7 +4,7 @@ from typing import Literal, Optional
 
 import torch
 
-from ..distributions import DiscreteMaskedPrior, UniformTD
+from ..distributions import DiscreteMaskedPrior, TimeDistribution
 from .mddm_infer import MDDMInferMixin
 from .mddm_train import MDDMTrainMixin
 from ..noise import LogLinearExpNoiseTransform
@@ -13,7 +13,7 @@ from ..noise import LogLinearExpNoiseTransform
 class MDDM(MDDMTrainMixin, MDDMInferMixin):
     def __init__(
         self,
-        time_distribution: UniformTD,
+        time_distribution: TimeDistribution,
         prior_distribution: DiscreteMaskedPrior,
         noise_schedule: LogLinearExpNoiseTransform,
         device: str = "cpu",

@@ -2,14 +2,38 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Optional, Tuple, Union
+from typing import Optional, Protocol, Tuple, Union, runtime_checkable
 
 import torch
 from torch import Tensor
 
 
+@runtime_checkable
+class TimeDistribution(Protocol):
+    def sample(
+        self,
+        n_samples: Union[int, Tuple[int, ...], torch.Size],
+        device: Union[str, torch.device] = "cpu",
+        rng_generator: Optional[torch.Generator] = None,
+    ) -> Tensor:
+        ...
+
+
+def _as_shape(n_samples: Union[int, Tuple[int, ...], torch.Size]) -> Tuple[int, ...]:
+    return (n_samples,) if isinstance(n_samples, int) else tuple(n_samples)
+
+
+def _validate_time_bounds(min_t: float, max_t: float):
+    if not 0.0 <= min_t < 1.0:
+        raise ValueError("min_t must be in [0.0, 1.0)")
+    if not 0.0 < max_t <= 1.0:
+        raise ValueError("max_t must be in (0.0, 1.0]")
+    if min_t >= max_t:
+        raise ValueError("min_t must be strictly less than max_t")
+
+
 @dataclass
-class UniformTD:
+class DiscreteUniformTD:
     nsteps: int
     rng_generator: Optional[torch.Generator] = None
 
@@ -26,14 +50,14 @@ class UniformTD:
         if rng_generator is None:
             rng_generator = self.rng_generator
 
-        shape = (n_samples,) if isinstance(n_samples, int) else tuple(n_samples)
+        shape = _as_shape(n_samples)
         return torch.randint(
             0, self.nsteps, shape, device=device, generator=rng_generator
         )
 
 
 @dataclass
-class AntitheticUniformTD(UniformTD):
+class DiscreteAntitheticUniformTD(DiscreteUniformTD):
     def sample(
         self,
         n_samples: Union[int, Tuple[int, ...], torch.Size],
@@ -43,7 +67,7 @@ class AntitheticUniformTD(UniformTD):
         if rng_generator is None:
             rng_generator = self.rng_generator
 
-        shape = (n_samples,) if isinstance(n_samples, int) else tuple(n_samples)
+        shape = _as_shape(n_samples)
         if len(shape) == 0:
             raise ValueError("n_samples must describe at least one dimension")
         n_total = math.prod(shape)
@@ -60,7 +84,7 @@ class AntitheticUniformTD(UniformTD):
 
 
 @dataclass
-class SymmetricUniformTD(UniformTD):
+class DiscreteSymmetricUniformTD(DiscreteUniformTD):
     def sample(
         self,
         n_samples: Union[int, Tuple[int, ...], torch.Size],
@@ -81,6 +105,61 @@ class SymmetricUniformTD(UniformTD):
             generator=rng_generator,
         )
         return torch.cat([time_step, self.nsteps - time_step - 1], dim=0)[:n_samples]
+
+
+@dataclass
+class ContinuousUniformTD:
+    min_t: float = 0.0
+    max_t: float = 1.0
+    sampling_eps: float = 0.0
+    rng_generator: Optional[torch.Generator] = None
+
+    def __post_init__(self):
+        _validate_time_bounds(self.min_t, self.max_t)
+        if not 0.0 <= self.sampling_eps < 1.0:
+            raise ValueError("sampling_eps must be in [0.0, 1.0)")
+
+    def sample(
+        self,
+        n_samples: Union[int, Tuple[int, ...], torch.Size],
+        device: Union[str, torch.device] = "cpu",
+        rng_generator: Optional[torch.Generator] = None,
+    ) -> Tensor:
+        if rng_generator is None:
+            rng_generator = self.rng_generator
+
+        shape = _as_shape(n_samples)
+        time_step = torch.rand(shape, device=device, generator=rng_generator)
+        if self.sampling_eps > 0:
+            time_step = (1 - self.sampling_eps) * time_step + self.sampling_eps
+        return time_step * (self.max_t - self.min_t) + self.min_t
+
+
+@dataclass
+class ContinuousAntitheticUniformTD(ContinuousUniformTD):
+    def sample(
+        self,
+        n_samples: Union[int, Tuple[int, ...], torch.Size],
+        device: Union[str, torch.device] = "cpu",
+        rng_generator: Optional[torch.Generator] = None,
+    ) -> Tensor:
+        if rng_generator is None:
+            rng_generator = self.rng_generator
+
+        shape = _as_shape(n_samples)
+        if len(shape) == 0:
+            raise ValueError("n_samples must describe at least one dimension")
+        n_total = math.prod(shape)
+        if n_total <= 0:
+            raise ValueError("n_samples must be > 0")
+
+        time_step = torch.rand((n_total,), device=device, generator=rng_generator)
+        offset = torch.arange(n_total, device=device) / n_total
+        time_step = (time_step / n_total + offset) % 1
+        if self.sampling_eps > 0:
+            time_step = (1 - self.sampling_eps) * time_step + self.sampling_eps
+        time_step = time_step * (self.max_t - self.min_t) + self.min_t
+        return time_step.view(shape)
 
 
 @dataclass

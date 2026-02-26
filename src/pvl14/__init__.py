@@ -1,8 +1,11 @@
 from .distributions import (
-    AntitheticUniformTD,
+    ContinuousAntitheticUniformTD,
+    ContinuousUniformTD,
+    DiscreteAntitheticUniformTD,
     DiscreteMaskedPrior,
-    SymmetricUniformTD,
-    UniformTD,
+    DiscreteSymmetricUniformTD,
+    DiscreteUniformTD,
+    TimeDistribution,
 )
 from .inference import (
     CosineTimeSchedule,
@@ -16,9 +19,12 @@ from .noise import LogLinearExpNoiseTransform
 
 __all__ = [
     "MDDM",
-    "UniformTD",
-    "AntitheticUniformTD",
-    "SymmetricUniformTD",
+    "DiscreteUniformTD",
+    "DiscreteAntitheticUniformTD",
+    "DiscreteSymmetricUniformTD",
+    "ContinuousUniformTD",
+    "ContinuousAntitheticUniformTD",
+    "TimeDistribution",
     "DiscreteMaskedPrior",
     "LogLinearExpNoiseTransform",
     "LinearTimeSchedule",

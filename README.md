@@ -9,9 +9,11 @@ Lightweight PyTorch code for masked discrete diffusion with MDDM-style decoding.
 Core classes exported by `pvl14/__init__.py`:
 
 - `MDDM`
-- `UniformTD`
-- `AntitheticUniformTD`
-- `SymmetricUniformTD`
+- `DiscreteUniformTD`
+- `DiscreteAntitheticUniformTD`
+- `DiscreteSymmetricUniformTD`
+- `ContinuousUniformTD`
+- `ContinuousAntitheticUniformTD`
 - `DiscreteMaskedPrior`
 - `LogLinearExpNoiseTransform`
 - `LinearTimeSchedule`
@@ -26,7 +28,7 @@ Additional schedules available from `pvl14/noise.py`:
 
 ## Project layout
 
-- `pvl14/distributions.py`: time-step samplers (`UniformTD` variants) and masked prior (`DiscreteMaskedPrior`).
+- `pvl14/distributions.py`: time-step samplers (`DiscreteUniformTD`/`ContinuousUniformTD` variants) and masked prior (`DiscreteMaskedPrior`).
 - `pvl14/noise.py`: continuous-time noise transforms (`t -> sigma -> alpha`).
 - `pvl14/mddm/`: main model implementation (`MDDM`) split into train/infer mixins.
 - `pvl14/inference.py`: reusable inference schedules + `run_inference_loop(...)`.
@@ -44,7 +46,7 @@ pip install -e .
 import torch
 from pvl14 import (
     MDDM,
-    UniformTD,
+    ContinuousUniformTD,
     DiscreteMaskedPrior,
     LogLinearExpNoiseTransform,
 )
@@ -54,7 +56,7 @@ mask_idx = vocab - 1
 
 prior = DiscreteMaskedPrior(num_classes=vocab, mask_dim=mask_idx)
 mddm = MDDM(
-    time_distribution=UniformTD(nsteps=8),
+    time_distribution=ContinuousUniformTD(),
     prior_distribution=prior,
     noise_schedule=LogLinearExpNoiseTransform(),
 )
@@ -76,12 +78,12 @@ xt_next = mddm.step_confidence(
 
 ```python
 import torch
-from pvl14 import MDDM, UniformTD, DiscreteMaskedPrior, LogLinearExpNoiseTransform
+from pvl14 import MDDM, ContinuousUniformTD, DiscreteMaskedPrior, LogLinearExpNoiseTransform
 
 batch, seq_len, vocab = 4, 12, 64
 prior = DiscreteMaskedPrior(num_classes=vocab)
 mddm = MDDM(
-    time_distribution=UniformTD(nsteps=16),
+    time_distribution=ContinuousUniformTD(),
     prior_distribution=prior,
     noise_schedule=LogLinearExpNoiseTransform(),
 )
@@ -107,7 +109,7 @@ loss_per_sample = mddm.loss(logits=logits, target=x0, xt=xt, time=t)
 import torch
 from pvl14 import (
     MDDM,
-    UniformTD,
+    DiscreteUniformTD,
     DiscreteMaskedPrior,
     LogLinearExpNoiseTransform,
     LinearTimeSchedule,
@@ -119,7 +121,9 @@ from pvl14 import (
 batch, seq_len, vocab = 2, 16, 100
 prior = DiscreteMaskedPrior(num_classes=vocab)
 mddm = MDDM(
-    time_distribution=UniformTD(nsteps=16),
+    # Discrete time distributions are auto-normalized to [0, 1] during training.
+    # For explicit continuous training-time sampling, use ContinuousUniformTD().
+    time_distribution=DiscreteUniformTD(nsteps=16),
     prior_distribution=prior,
     noise_schedule=LogLinearExpNoiseTransform(),
 )
@@ -151,7 +155,7 @@ x_exp = run_inference_loop(mddm, model_fn, x, exp_sched, strategy="step")
 import torch
 from pvl14 import (
     MDDM,
-    UniformTD,
+    DiscreteUniformTD,
     DiscreteMaskedPrior,
     LogLinearExpNoiseTransform,
     ExponentialTimeSchedule,
@@ -161,7 +165,7 @@ from pvl14 import (
 batch, seq_len, vocab = 2, 16, 100
 prior = DiscreteMaskedPrior(num_classes=vocab)
 mddm = MDDM(
-    time_distribution=UniformTD(nsteps=24),
+    time_distribution=DiscreteUniformTD(nsteps=24),
     prior_distribution=prior,
     noise_schedule=LogLinearExpNoiseTransform(),
     decode_strategy="threshold_regen",
@@ -193,4 +197,6 @@ x_out = run_inference_loop(
 ## Notes
 
 - Noise schedules (`LogLinearExpNoiseTransform`, `CosineNoiseTransform`, `LinearNoiseTransform`) expect time `t` in `[0, 1]`.
-- `UniformTD`/`AntitheticUniformTD`/`SymmetricUniformTD` sample discrete step indices in `[0, nsteps)`.
+- `ContinuousUniformTD`/`ContinuousAntitheticUniformTD` sample continuous time in `(0, 1]`.
+- `DiscreteUniformTD`/`DiscreteAntitheticUniformTD`/`DiscreteSymmetricUniformTD` sample discrete step indices in `[0, nsteps)`.
+- `MDDM` auto-normalizes discrete time samples into `[0, 1]` for training-time noise schedules.
