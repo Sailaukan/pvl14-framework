@@ -24,6 +24,14 @@ Additional schedules available from `pvl14/noise.py`:
 - `CosineNoiseTransform`
 - `LinearNoiseTransform`
 
+## Project layout
+
+- `pvl14/distributions.py`: time-step samplers (`UniformTD` variants) and masked prior (`DiscreteMaskedPrior`).
+- `pvl14/noise.py`: continuous-time noise transforms (`t -> sigma -> alpha`).
+- `pvl14/mddm/`: main model implementation (`MDDM`) split into train/infer mixins.
+- `pvl14/inference.py`: reusable inference schedules + `run_inference_loop(...)`.
+- `pvl14/utils.py`: shared tensor utilities used internally.
+
 ## Installation
 
 ```bash
@@ -127,6 +135,59 @@ exp_sched = ExponentialTimeSchedule(nsteps=16, min_t=0.0, max_t=1.0, k=5.0)
 x_linear = run_inference_loop(mddm, model_fn, x, linear_sched, strategy="step")
 x_cos = run_inference_loop(mddm, model_fn, x, cos_sched, strategy="step")
 x_exp = run_inference_loop(mddm, model_fn, x, exp_sched, strategy="step")
+```
+
+### Exponential schedule tuning
+
+`ExponentialTimeSchedule(k=...)` controls how fast time decreases:
+
+- Larger `k` (for example `k=7.0`): stronger early denoising, smaller late updates.
+- Smaller `k` (for example `k=2.0`): closer to linear behavior.
+- Constraint: `k > 0` and generated schedule must stay strictly decreasing.
+
+## Threshold regeneration example
+
+```python
+import torch
+from pvl14 import (
+    MDDM,
+    UniformTD,
+    DiscreteMaskedPrior,
+    LogLinearExpNoiseTransform,
+    ExponentialTimeSchedule,
+    run_inference_loop,
+)
+
+batch, seq_len, vocab = 2, 16, 100
+prior = DiscreteMaskedPrior(num_classes=vocab)
+mddm = MDDM(
+    time_distribution=UniformTD(nsteps=24),
+    prior_distribution=prior,
+    noise_schedule=LogLinearExpNoiseTransform(),
+    decode_strategy="threshold_regen",
+    confidence_threshold=0.50,
+    min_conf_gain=0.05,
+    max_remask_frac=0.25,
+    allow_remask_unmasked=True,
+)
+
+x = prior.sample((batch, seq_len))
+schedule = ExponentialTimeSchedule(nsteps=24, k=5.0)
+
+def model_fn(x, t):
+    return torch.randn(x.shape[0], x.shape[1], vocab, device=x.device)
+
+x_out = run_inference_loop(
+    mddm,
+    model_fn,
+    x,
+    schedule,
+    strategy="confidence",
+    confidence_threshold=0.50,
+    min_conf_gain=0.05,
+    max_remask_frac=0.25,
+    allow_remask_unmasked=True,
+)
 ```
 
 ## Notes
