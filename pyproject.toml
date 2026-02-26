@@ -16,4 +16,4 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["pvl14_framework*"]
+include = ["pvl14*"]

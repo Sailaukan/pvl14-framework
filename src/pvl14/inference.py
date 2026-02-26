@@ -54,6 +54,20 @@ class CosineTimeSchedule(_TimeSchedule):
         return torch.cos(s * torch.pi / 2).clamp(0.0, 1.0)
 
 
+@dataclass
+class ExponentialTimeSchedule(_TimeSchedule):
+    k: float = 5.0
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.k <= 0.0:
+            raise ValueError("k must be > 0.0")
+
+    def _curve(self, s: Tensor) -> Tensor:
+        exp_neg_k = torch.exp(torch.tensor(-self.k, device=s.device, dtype=s.dtype))
+        return ((torch.exp(-self.k * s) - exp_neg_k) / (1.0 - exp_neg_k)).clamp(0.0, 1.0)
+
+
 def get_time_deltas(schedule: Tensor) -> Tensor:
     if schedule.ndim != 1:
         raise ValueError("schedule must be a 1D tensor")
@@ -66,16 +80,21 @@ def get_time_deltas(schedule: Tensor) -> Tensor:
 
 
 def run_inference_loop(
-    mdlm,
+    mddm,
     model_fn: Callable[[Tensor, Tensor], Tensor],
     x_init: Tensor,
-    schedule: Union[Tensor, LinearTimeSchedule, CosineTimeSchedule],
+    schedule: Union[Tensor, LinearTimeSchedule, CosineTimeSchedule, ExponentialTimeSchedule],
     strategy: Literal["step", "confidence"] = "step",
     temperature: float = 1.0,
     logit_temperature: float = 1.0,
     randomness: float = 1.0,
     confidence_temperature: float = 1.0,
     num_tokens_unmask: int = 1,
+    confidence_threshold: Optional[float] = None,
+    min_conf_gain: Optional[float] = None,
+    max_remask_frac: Optional[float] = None,
+    allow_remask_unmasked: Optional[bool] = None,
+    fix_mask: Optional[Tensor] = None,
 ) -> Tensor:
     if strategy not in ("step", "confidence"):
         raise ValueError(f"Unknown strategy: {strategy!r}. Must be 'step' or 'confidence'.")
@@ -98,9 +117,9 @@ def run_inference_loop(
 
         if strategy == "step":
             dt = deltas[i : i + 1].expand(batch_size)
-            x = mdlm.step(logits=logits, t=t, xt=x, dt=dt, temperature=temperature)
+            x = mddm.step(logits=logits, t=t, xt=x, dt=dt, temperature=temperature)
         else:
-            x = mdlm.step_confidence(
+            x = mddm.step_confidence(
                 logits=logits,
                 xt=x,
                 curr_step=i,
@@ -109,6 +128,11 @@ def run_inference_loop(
                 randomness=randomness,
                 confidence_temperature=confidence_temperature,
                 num_tokens_unmask=num_tokens_unmask,
+                confidence_threshold=confidence_threshold,
+                min_conf_gain=min_conf_gain,
+                max_remask_frac=max_remask_frac,
+                allow_remask_unmasked=allow_remask_unmasked,
+                fix_mask=fix_mask,
             )
 
     return x

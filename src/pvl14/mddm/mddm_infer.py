@@ -6,111 +6,10 @@ from typing import Literal, Optional
 import torch
 from torch import Tensor
 
-from .distributions import DiscreteMaskedPrior, UniformTD
-from .noise import LogLinearExpNoiseTransform
-from .utils import pad_like
+from ..utils import pad_like
 
 
-class MDLM:
-    def __init__(
-        self,
-        time_distribution: UniformTD,
-        prior_distribution: DiscreteMaskedPrior,
-        noise_schedule: LogLinearExpNoiseTransform,
-        device: str = "cpu",
-        rng_generator: Optional[torch.Generator] = None,
-        decode_strategy: Literal["confidence", "self_path_planning"] = "confidence",
-    ):
-        self.time_distribution = time_distribution
-        self.prior_distribution = prior_distribution
-        self.noise_schedule = noise_schedule
-        self.device = device
-        self.rng_generator = rng_generator
-        self.decode_strategy = decode_strategy
-
-        self.num_classes = prior_distribution.num_classes
-        self.mask_index = int(prior_distribution.mask_dim)
-
-    def to_device(self, device: str):
-        self.device = device
-        return self
-
-    def sample_prior(self, *args, **kwargs) -> Tensor:
-        if "device" not in kwargs:
-            kwargs["device"] = self.device
-        kwargs["rng_generator"] = self.rng_generator
-        return self.prior_distribution.sample(*args, **kwargs)
-
-    def sample_time(self, *args, **kwargs) -> Tensor:
-        if "device" not in kwargs:
-            kwargs["device"] = self.device
-        kwargs["rng_generator"] = self.rng_generator
-        return self.time_distribution.sample(*args, **kwargs)
-
-    def interpolate(self, data: Tensor, t: Tensor):
-        if data.dtype == torch.float and data.ndim > 2:
-            x0 = data.argmax(-1)
-        else:
-            x0 = data
-        sigma = self.noise_schedule.calculate_sigma(t, data.device)
-        alpha = self.noise_schedule.sigma_to_alpha(sigma)
-        p_mask = 1 - alpha
-        p_mask = pad_like(p_mask, x0)
-        mask_indices = (
-            torch.rand(*x0.shape, device=x0.device, generator=self.rng_generator)
-            < p_mask
-        )
-        xt = torch.where(mask_indices, self.mask_index, x0)
-        return xt
-
-    def forward_process(self, data: Tensor, t: Tensor) -> Tensor:
-        return self.interpolate(data, t)
-
-    def _subs_parameterization(self, logits: Tensor, xt: Tensor) -> Tensor:
-        logits = logits.clone()
-        logits[..., self.mask_index] += -1000000.0
-        logprobs = logits - torch.logsumexp(logits, dim=-1, keepdim=True)
-        unmasked_indices = xt != self.mask_index
-        logprobs[unmasked_indices] = -1000000.0
-        logprobs[unmasked_indices, xt[unmasked_indices]] = 0
-        return logprobs
-
-    def loss(
-        self,
-        logits: Tensor,
-        target: Tensor,
-        xt: Tensor,
-        time: Tensor,
-        mask: Optional[Tensor] = None,
-        use_weight: bool = True,
-        global_mean: bool = False,
-    ):
-        logprobs = self._subs_parameterization(logits, xt)
-        log_p_theta = torch.gather(
-            input=logprobs, dim=-1, index=target[..., None]
-        ).squeeze(-1)
-
-        sigma = self.noise_schedule.calculate_sigma(time, target.device)
-        dsigma = self.noise_schedule.d_dt_sigma(time, target.device)
-        loss = -log_p_theta
-        if use_weight:
-            loss = loss * (dsigma / torch.expm1(sigma))[:, None]
-
-        if global_mean:
-            if mask is not None:
-                loss = loss * mask
-                loss = loss.sum() / mask.sum().clamp_min(1)
-            else:
-                loss = loss.sum() / logits.size(1)
-        else:
-            if mask is not None:
-                loss = loss * mask
-                num_non_masked_elements = torch.sum(mask, dim=-1).clamp_min(1)
-                loss = torch.sum(loss, dim=-1) / num_non_masked_elements
-            else:
-                loss = torch.sum(loss, dim=-1) / logits.size(1)
-        return loss
-
+class MDDMInferMixin:
     def step(
         self,
         logits: Tensor,
@@ -201,6 +100,123 @@ class MDLM:
         threshold = sorted_scores.gather(dim=-1, index=cutoff_len)
         return scores < threshold
 
+    def _normalize_fix_mask(self, xt: Tensor, fix_mask: Optional[Tensor]) -> Tensor:
+        if fix_mask is None:
+            return torch.zeros_like(xt, dtype=torch.bool)
+        normalized = fix_mask.bool()
+        if normalized.shape != xt.shape:
+            raise ValueError(f"fix_mask shape {normalized.shape} must match xt shape {xt.shape}")
+        return normalized
+
+    def _stochastic_prediction(
+        self,
+        logits: Tensor,
+        logit_temperature: float,
+        confidence_temperature: float,
+        randomness: float,
+        ratio: float,
+    ):
+        logits = logits.clone()
+        logits[..., self.mask_index] += -1000000.0
+        denom = max(logit_temperature, 1e-8)
+        scaled_logits = logits / denom
+        probs = torch.softmax(scaled_logits, dim=-1)
+        sampled_logits = scaled_logits
+        if confidence_temperature > 0.0 and randomness > 0.0:
+            gumbel = -torch.log(
+                -torch.log(
+                    torch.rand(logits.shape, device=logits.device, generator=self.rng_generator) + 1e-8
+                )
+                + 1e-8
+            )
+            sampled_logits = sampled_logits + gumbel * confidence_temperature * randomness * max(0.0, 1.0 - ratio)
+        preds = sampled_logits.argmax(dim=-1)
+        pred_conf = probs.gather(-1, preds.unsqueeze(-1)).squeeze(-1)
+        return preds, pred_conf, probs
+
+    def step_threshold_regen(
+        self,
+        logits: Tensor,
+        xt: Tensor,
+        curr_step: int,
+        num_steps: int,
+        logit_temperature: float = 1.0,
+        randomness: float = 1.0,
+        confidence_temperature: float = 1.0,
+        confidence_threshold: Optional[float] = None,
+        min_conf_gain: Optional[float] = None,
+        max_remask_frac: Optional[float] = None,
+        allow_remask_unmasked: Optional[bool] = None,
+        fix_mask: Optional[Tensor] = None,
+    ) -> Tensor:
+        if xt.ndim > 3:
+            raise NotImplementedError(
+                "step_threshold_regen is implemented for Batch x Sequence x State Space shaped tensors."
+            )
+        if curr_step < 0 or num_steps < 1:
+            raise ValueError("Invalid input values for curr_step or num_steps.")
+
+        threshold = self.confidence_threshold if confidence_threshold is None else float(confidence_threshold)
+        conf_gain = self.min_conf_gain if min_conf_gain is None else float(min_conf_gain)
+        remask_frac = self.max_remask_frac if max_remask_frac is None else float(max_remask_frac)
+        allow_remask = self.allow_remask_unmasked if allow_remask_unmasked is None else bool(allow_remask_unmasked)
+        if not 0.0 <= threshold <= 1.0:
+            raise ValueError("confidence_threshold must be in [0.0, 1.0]")
+        if conf_gain < 0.0:
+            raise ValueError("min_conf_gain must be >= 0.0")
+        if not 0.0 <= remask_frac <= 1.0:
+            raise ValueError("max_remask_frac must be in [0.0, 1.0]")
+
+        xt = xt.clone()
+        fix_mask = self._normalize_fix_mask(xt, fix_mask)
+        ratio = 1.0 if num_steps <= 1 else max(0.0, min(1.0, curr_step / (num_steps - 1)))
+        last_mask = xt == self.mask_index
+        editable = ~fix_mask
+
+        preds, pred_conf, probs = self._stochastic_prediction(
+            logits=logits,
+            logit_temperature=logit_temperature,
+            confidence_temperature=confidence_temperature,
+            randomness=randomness,
+            ratio=ratio,
+        )
+        current_conf = probs.gather(-1, xt.unsqueeze(-1)).squeeze(-1)
+
+        fill_mask = last_mask & editable
+        xt[fill_mask] = preds[fill_mask]
+
+        if curr_step == num_steps - 1:
+            if allow_remask:
+                replace_mask = editable & (~last_mask) & (current_conf < threshold) & (
+                    pred_conf > current_conf + conf_gain
+                )
+                xt[replace_mask] = preds[replace_mask]
+            return xt
+
+        if not allow_remask:
+            return xt
+
+        remask_candidates = editable & (~last_mask) & (current_conf < threshold) & (
+            pred_conf > current_conf + conf_gain
+        )
+        if not remask_candidates.any():
+            return xt
+
+        remask_budget = torch.ceil(editable.sum(dim=-1).float() * remask_frac * (1.0 - ratio)).long()
+        remask_budget = torch.clamp(remask_budget, min=0, max=xt.shape[-1])
+
+        candidate_scores = torch.where(remask_candidates, current_conf, torch.full_like(current_conf, float("inf")))
+        remask_mask = torch.zeros_like(remask_candidates)
+        for b in range(xt.shape[0]):
+            k = min(int(remask_budget[b].item()), int(remask_candidates[b].sum().item()))
+            if k <= 0:
+                continue
+            idx = torch.topk(candidate_scores[b], k=k, largest=False).indices
+            remask_mask[b, idx] = True
+
+        xt[remask_mask] = self.mask_index
+        return xt
+
     def step_self_path_planning(
         self,
         logits: Tensor,
@@ -259,6 +275,11 @@ class MDLM:
         randomness: float = 1.0,
         confidence_temperature: float = 1.0,
         num_tokens_unmask: int = 1,
+        confidence_threshold: Optional[float] = None,
+        min_conf_gain: Optional[float] = None,
+        max_remask_frac: Optional[float] = None,
+        allow_remask_unmasked: Optional[bool] = None,
+        fix_mask: Optional[Tensor] = None,
     ) -> Tensor:
         if self.decode_strategy == "self_path_planning":
             if num_steps <= 1:
@@ -277,7 +298,22 @@ class MDLM:
                 randomness=randomness,
                 confidence_temperature=confidence_temperature,
                 score_type="confidence",
-                fix_mask=None,
+                fix_mask=fix_mask,
+            )
+        if self.decode_strategy == "threshold_regen":
+            return self.step_threshold_regen(
+                logits=logits,
+                xt=xt,
+                curr_step=curr_step,
+                num_steps=num_steps,
+                logit_temperature=logit_temperature,
+                randomness=randomness,
+                confidence_temperature=confidence_temperature,
+                confidence_threshold=confidence_threshold,
+                min_conf_gain=min_conf_gain,
+                max_remask_frac=max_remask_frac,
+                allow_remask_unmasked=allow_remask_unmasked,
+                fix_mask=fix_mask,
             )
 
         if xt.ndim > 3:
