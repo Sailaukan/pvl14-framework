@@ -60,6 +60,30 @@ class AntitheticUniformTD(UniformTD):
 
 
 @dataclass
+class SymmetricUniformTD(UniformTD):
+    def sample(
+        self,
+        n_samples: Union[int, Tuple[int, ...], torch.Size],
+        device: Union[str, torch.device] = "cpu",
+        rng_generator: Optional[torch.Generator] = None,
+    ) -> Tensor:
+        if rng_generator is None:
+            rng_generator = self.rng_generator
+
+        if not isinstance(n_samples, int):
+            n_samples = n_samples[0]
+
+        time_step = torch.randint(
+            0,
+            self.nsteps,
+            size=(n_samples // 2 + 1,),
+            device=device,
+            generator=rng_generator,
+        )
+        return torch.cat([time_step, self.nsteps - time_step - 1], dim=0)[:n_samples]
+
+
+@dataclass
 class DiscreteMaskedPrior:
     num_classes: int  # Vocabulary size (includes the mask token)
     mask_dim: Optional[int] = None
