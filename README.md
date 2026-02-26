@@ -1,17 +1,23 @@
+![PVL14 Framework Cover](pvl14_cover.png)
+
 # PVL14
 
-A lightweight open-source Python framework for masked discrete diffusion.
+Lightweight PyTorch code for masked discrete diffusion with MDLM-style decoding.
 
-## What it is
+## Current codebase
 
-`PVL14` provides a minimal MDLM-style implementation for token-based generative modeling with iterative mask/unmask decoding.
+Core classes exported by `src/__init__.py`:
 
-## Features
+- `MDLM`
+- `UniformTD`
+- `AntitheticUniformTD`
+- `DiscreteMaskedPrior`
+- `LogLinearExpNoiseTransform`
 
-- Minimal `MDLM` class for masked discrete diffusion.
-- Confidence-based iterative decoding.
-- Re-masking and re-generation via self-path-planning style sampling.
-- Small, readable codebase built on PyTorch.
+Additional schedules available from `src/noise.py`:
+
+- `CosineNoiseTransform`
+- `LinearNoiseTransform`
 
 ## Installation
 
@@ -19,38 +25,68 @@ A lightweight open-source Python framework for masked discrete diffusion.
 pip install -e .
 ```
 
-## Quick start
+## Quick start (matches current APIs)
 
 ```python
 import torch
-from pvl14_framework import (
+from src import (
     MDLM,
     UniformTD,
-    AntitheticUniformTD,
-    LogLinearExpNoiseTransform,
     DiscreteMaskedPrior,
+    LogLinearExpNoiseTransform,
 )
 
-prior = DiscreteMaskedPrior(num_classes=100, mask_dim=99)
+batch, seq_len, vocab = 2, 16, 100
+mask_idx = vocab - 1
+
+prior = DiscreteMaskedPrior(num_classes=vocab, mask_dim=mask_idx)
 mdlm = MDLM(
-    time_distribution=UniformTD(),
+    time_distribution=UniformTD(nsteps=8),
     prior_distribution=prior,
     noise_schedule=LogLinearExpNoiseTransform(),
 )
 
-x = torch.full((2, 16), 99)              # masked tokens
-logits = torch.randn(2, 16, 100)         # model output logits
-x_next = mdlm.step_confidence(logits, x, curr_step=0, num_steps=8)
+# Start from a fully masked sample
+xt = prior.sample(shape=(batch, seq_len))
+logits = torch.randn(batch, seq_len, vocab)
 
-# Optional: antithetic time sampling (GenMol-style)
-mdlm_antithetic = MDLM(
-    time_distribution=AntitheticUniformTD(sampling_eps=1e-3),
-    prior_distribution=prior,
-    noise_schedule=LogLinearExpNoiseTransform(),
+xt_next = mdlm.step_confidence(
+    logits=logits,
+    xt=xt,
+    curr_step=0,
+    num_steps=8,
+    num_tokens_unmask=2,
 )
 ```
 
-## Status
+## Forward noising and loss
 
-Early-stage and intentionally minimal.
-# pvl14-framework
+```python
+import torch
+from src import MDLM, UniformTD, DiscreteMaskedPrior, LogLinearExpNoiseTransform
+
+batch, seq_len, vocab = 4, 12, 64
+prior = DiscreteMaskedPrior(num_classes=vocab)
+mdlm = MDLM(
+    time_distribution=UniformTD(nsteps=16),
+    prior_distribution=prior,
+    noise_schedule=LogLinearExpNoiseTransform(),
+)
+
+x0 = torch.randint(0, vocab - 1, (batch, seq_len))
+t = torch.rand(batch)  # continuous time in [0, 1]
+xt = mdlm.forward_process(x0, t)
+logits = torch.randn(batch, seq_len, vocab)
+
+loss_per_sample = mdlm.loss(logits=logits, target=x0, xt=xt, time=t)
+```
+
+## Decoding options
+
+- `decode_strategy="confidence"` (default): unmask top-confidence positions each step.
+- `decode_strategy="self_path_planning"`: uses re-masking / regeneration behavior through `step_confidence(...)`.
+
+## Notes
+
+- Noise schedules (`LogLinearExpNoiseTransform`, `CosineNoiseTransform`, `LinearNoiseTransform`) expect time `t` in `[0, 1]`.
+- `UniformTD`/`AntitheticUniformTD` sample discrete step indices in `[0, nsteps)`.
