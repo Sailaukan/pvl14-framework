@@ -2,7 +2,7 @@
 
 # PVL14
 
-Lightweight PyTorch code for masked discrete diffusion with MDDM-style decoding.
+Lightweight open-source framework for masked discrete diffusion models
 
 ## Current codebase
 
